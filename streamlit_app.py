@@ -5,6 +5,7 @@ from pathlib import Path
 from PIL import Image
 from ultralytics import YOLO
 import easyocr
+import re
 
 st.set_page_config(page_title="ANPR | Indian License Plates", page_icon="🚘", layout="wide")
 
@@ -65,22 +66,11 @@ def ocr_image(reader, image, variant):
 
 
 def indian_plate_normalizations(text):
-    """Generate OCR-confusion corrections using the structure of Indian plates.
-
-    Expected structure is broadly: STATE(2 letters) + REGION(1-2 digits) +
-    SERIES(1-3 letters) + NUMBER(1-4 digits). OCR often confuses characters
-    such as O/0, I/1, T/1 and L/4. Corrections are applied only in positions
-    that are expected to be numeric, so normal letters in the series are kept.
-    """
+    """Generate OCR-confusion corrections using the broad structure of Indian plates."""
     text = clean_text(text)
-    if not (7 <= len(text) <= 12):
+    if not (7 <= len(text) <= 12) or not text[:2].isalpha():
         return []
 
-    # First two characters should be letters. Do not alter them.
-    if not text[:2].isalpha():
-        return []
-
-    # Try every possible 1-2 digit region length and 1-3 letter series length.
     digit_map = {
         "O": "0", "Q": "0", "D": "0",
         "I": "1", "J": "1", "T": "1", "L": "4",
@@ -95,22 +85,45 @@ def indian_plate_normalizations(text):
             number_len = len(text) - number_start
             if not (1 <= number_len <= 4):
                 continue
-
             region = text[2:2 + region_len]
             series = text[2 + region_len:number_start]
             number = text[number_start:]
-
-            # Region and final number should be numeric after OCR correction.
             corrected_region = "".join(digit_map.get(ch, ch) for ch in region)
             corrected_number = "".join(digit_map.get(ch, ch) for ch in number)
-            if not corrected_region.isdigit() or not corrected_number.isdigit():
-                continue
-            if not series.isalpha():
-                continue
-
-            candidate = text[:2] + corrected_region + series + corrected_number
-            out.append(candidate)
+            if corrected_region.isdigit() and corrected_number.isdigit() and series.isalpha():
+                out.append(text[:2] + corrected_region + series + corrected_number)
     return list(dict.fromkeys(out))
+
+
+def plate_format_score(text):
+    """Score whether a candidate has a plausible Indian registration layout."""
+    text = clean_text(text)
+    if not (7 <= len(text) <= 12):
+        return 0.0
+    if not text[:2].isalpha():
+        return 0.0
+
+    best = 0.0
+    # Common broad layouts: 2 letters + 1-2 digits + 1-3 letters + 1-4 digits.
+    for region_len in (1, 2):
+        for series_len in (1, 2, 3):
+            number_start = 2 + region_len + series_len
+            number_len = len(text) - number_start
+            if not (1 <= number_len <= 4):
+                continue
+            region = text[2:2 + region_len]
+            series = text[2 + region_len:number_start]
+            number = text[number_start:]
+            if region.isdigit() and series.isalpha() and number.isdigit():
+                score = 1.0
+                if 8 <= len(text) <= 10:
+                    score += 0.25
+                if region_len == 2:
+                    score += 0.08
+                if number_len == 4:
+                    score += 0.08
+                best = max(best, score)
+    return best
 
 
 def read_plate(reader, crop):
@@ -137,8 +150,7 @@ def read_plate(reader, crop):
         top = gray[:min(gray.shape[0], split + overlap)]
         bottom = gray[max(0, split - overlap):]
 
-        top_results = []
-        bottom_results = []
+        top_results, bottom_results = [], []
         row_images = {
             "top_original": top,
             "top_clahe": cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(top),
@@ -166,8 +178,6 @@ def read_plate(reader, crop):
                         "variant": "two_line_combined",
                     })
 
-    # Add structure-aware corrected versions. This fixes common OCR errors
-    # such as PBTOGNLL97 -> PB10GN4497 without hardcoding a particular plate.
     corrected = []
     for item in candidates:
         for normalized in indian_plate_normalizations(item["text"]):
@@ -190,10 +200,12 @@ def read_plate(reader, crop):
     def ranking_score(item):
         text = item["text"]
         confidence = item["confidence"]
-        length_bonus = 0.10 if 8 <= len(text) <= 10 else 0.0
+        format_score = plate_format_score(text)
+        normalized_bonus = 0.08 if "normalized" in item["variant"] else 0.0
         short_penalty = 0.35 if len(text) < 6 else 0.0
-        structure_bonus = 0.12 if indian_plate_normalizations(text) == [] and 8 <= len(text) <= 10 else 0.0
-        return confidence + length_bonus + structure_bonus - short_penalty
+        # Valid plate structure now outweighs a small OCR-confidence advantage.
+        # This prevents strings such as PB1OGN4497 from beating PB10GN4497.
+        return confidence + (0.45 * format_score) + normalized_bonus - short_penalty
 
     return sorted(unique.values(), key=ranking_score, reverse=True)
 
