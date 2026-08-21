@@ -37,7 +37,7 @@ def load_models(model_path: str):
 
 def preprocess_variants(crop):
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    up = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+    up = cv2.resize(gray, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
 
     sharpened = cv2.filter2D(
         up,
@@ -72,43 +72,183 @@ def preprocess_variants(crop):
     }
 
 
-def read_plate(reader, crop):
-    candidates = []
-    allowlist = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+def clean_text(text):
+    cleaned = "".join(
+        ch for ch in text.upper() if ch.isalnum()
+    )
+    # The Indian flag / country marking is not part of the registration number.
+    if cleaned in {"IND", "IN", "INDIA"}:
+        return ""
+    return cleaned
 
-    for variant, image in preprocess_variants(crop).items():
-        results = reader.readtext(
-            image,
-            detail=1,
-            paragraph=False,
-            allowlist=allowlist,
-            text_threshold=0.35,
-            low_text=0.20,
+
+def ocr_image(reader, image, variant):
+    results = reader.readtext(
+        image,
+        detail=1,
+        paragraph=False,
+        allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+        text_threshold=0.30,
+        low_text=0.15,
+        link_threshold=0.20,
+        mag_ratio=1.5,
+    )
+
+    candidates = []
+    for _, text, confidence in results:
+        cleaned = clean_text(text)
+        if cleaned:
+            candidates.append(
+                {
+                    "text": cleaned,
+                    "confidence": float(confidence),
+                    "variant": variant,
+                }
+            )
+    return candidates
+
+
+def read_plate(reader, crop):
+    """OCR tuned for Indian plates, including two-line layouts.
+
+    The detector crop can contain the IND logo on the left. We therefore
+    OCR both the complete crop and a right-side ROI that excludes the logo.
+    For tall/two-line plates, the upper and lower text rows are also OCRed
+    and combined into a single candidate.
+    """
+    candidates = []
+
+    h, w = crop.shape[:2]
+    if h < 2 or w < 10:
+        return candidates
+
+    # Remove the left-side IND/logo region from OCR while retaining a small
+    # margin so the first registration character is not clipped.
+    left_margin = int(w * 0.18)
+    right_roi = crop[:, max(0, left_margin):]
+
+    roi_variants = preprocess_variants(right_roi)
+
+    for variant, image in roi_variants.items():
+        candidates.extend(
+            ocr_image(
+                reader,
+                image,
+                f"roi_{variant}",
+            )
         )
 
-        for _, text, confidence in results:
-            cleaned = "".join(
-                ch for ch in text.upper() if ch.isalnum()
+    # Also OCR the full crop. The cleaner candidates from the right ROI will
+    # generally outrank logo-related text, while this helps one-line plates.
+    for variant, image in preprocess_variants(crop).items():
+        candidates.extend(
+            ocr_image(
+                reader,
+                image,
+                f"full_{variant}",
             )
-            if cleaned:
-                candidates.append(
-                    {
-                        "text": cleaned,
-                        "confidence": float(confidence),
-                        "variant": variant,
-                    }
+        )
+
+    # Two-line Indian plates: OCR top and bottom rows separately and combine.
+    # This is especially useful for plates such as PB10G / N4497.
+    if h >= 24:
+        gray = cv2.cvtColor(right_roi, cv2.COLOR_BGR2GRAY)
+        gray = cv2.resize(
+            gray,
+            None,
+            fx=4,
+            fy=4,
+            interpolation=cv2.INTER_CUBIC,
+        )
+
+        split = gray.shape[0] // 2
+        overlap = max(2, int(gray.shape[0] * 0.05))
+        top = gray[:min(gray.shape[0], split + overlap)]
+        bottom = gray[max(0, split - overlap):]
+
+        top_results = []
+        bottom_results = []
+
+        for name, image in {
+            "top_original": top,
+            "top_clahe": cv2.createCLAHE(
+                clipLimit=2.0,
+                tileGridSize=(8, 8),
+            ).apply(top),
+            "bottom_original": bottom,
+            "bottom_clahe": cv2.createCLAHE(
+                clipLimit=2.0,
+                tileGridSize=(8, 8),
+            ).apply(bottom),
+        }.items():
+            found = ocr_image(
+                reader,
+                image,
+                f"rows_{name}",
+            )
+            if name.startswith("top_"):
+                top_results.extend(found)
+            else:
+                bottom_results.extend(found)
+
+        candidates.extend(top_results)
+        candidates.extend(bottom_results)
+
+        # Combine the strongest top/bottom strings. This handles two-line
+        # plates where EasyOCR sees each row independently.
+        top_results = sorted(
+            top_results,
+            key=lambda x: x["confidence"],
+            reverse=True,
+        )[:3]
+        bottom_results = sorted(
+            bottom_results,
+            key=lambda x: x["confidence"],
+            reverse=True,
+        )[:3]
+
+        for top_item in top_results:
+            for bottom_item in bottom_results:
+                combined = clean_text(
+                    top_item["text"] + bottom_item["text"]
                 )
+                if combined and 6 <= len(combined) <= 12:
+                    candidates.append(
+                        {
+                            "text": combined,
+                            "confidence": float(
+                                min(
+                                    top_item["confidence"],
+                                    bottom_item["confidence"],
+                                )
+                            ),
+                            "variant": "two_line_combined",
+                        }
+                    )
 
     # Remove duplicate OCR strings while keeping their strongest score.
     unique = {}
     for item in candidates:
-        key = item["text"]
-        if key not in unique or item["confidence"] > unique[key]["confidence"]:
-            unique[key] = item
+        text = item["text"]
+        if not text or text in {"IND", "IN", "INDIA"}:
+            continue
+        if text not in unique or item["confidence"] > unique[text]["confidence"]:
+            unique[text] = item
+
+    candidates = list(unique.values())
+
+    # Prefer plausible registration-number lengths when confidence scores are
+    # close. Very short strings such as IND/logo fragments should not win.
+    def ranking_score(item):
+        text = item["text"]
+        confidence = item["confidence"]
+        length_bonus = 0.10 if 8 <= len(text) <= 10 else 0.0
+        short_penalty = 0.35 if len(text) < 6 else 0.0
+        return confidence + length_bonus - short_penalty
 
     return sorted(
-        unique.values(),
-        key=lambda x: x["confidence"],
+        candidates,
+        key=ranking_score,
         reverse=True,
     )
 
@@ -174,7 +314,7 @@ def detect(image, detector, reader):
                 "bbox": [x1, y1, x2, y2],
                 "detector_confidence": detector_conf,
                 "best_ocr": best,
-                "ocr_candidates": candidates[:5],
+                "ocr_candidates": candidates[:8],
             }
         )
 
@@ -215,7 +355,8 @@ if uploaded:
     with right:
         st.info(
             "Detection uses the trained YOLO26n model. "
-            "OCR is evaluated across five preprocessing variants."
+            "OCR evaluates the plate ROI, ignores the IND logo where possible, "
+            "and supports two-line plate layouts."
         )
 
     if st.button("🚀 Run ANPR", type="primary", use_container_width=True):
