@@ -7,21 +7,169 @@ from ultralytics import YOLO
 import easyocr
 import re
 
-st.set_page_config(page_title="ANPR | Indian License Plates", page_icon="🚘", layout="wide")
+st.set_page_config(
+    page_title="ANPR | Indian License Plates",
+    page_icon="🚘",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 MODEL_PATH = Path("weights/best.pt")
 
-st.title("🚘 Automatic Number Plate Recognition")
-st.caption("YOLO26n license-plate detection + EasyOCR recognition")
+# -----------------------------------------------------------------------------
+# Premium UI styling — keeps the app native Streamlit, but gives it a polished
+# portfolio/demo feel without requiring external CSS frameworks or assets.
+# -----------------------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background:
+            radial-gradient(circle at 85% 0%, rgba(24, 119, 242, .13), transparent 28%),
+            radial-gradient(circle at 10% 20%, rgba(0, 212, 255, .08), transparent 25%),
+            #0b1017;
+    }
 
-with st.sidebar:
-    st.header("About")
-    st.write("Upload a vehicle image to detect Indian license plates and generate OCR candidates using multiple image-preprocessing variants.")
-    st.metric("Detector", "YOLO26n")
-    st.metric("Test mAP@50", "98.92%")
-    st.metric("Test mAP@50-95", "80.31%")
+    [data-testid="stHeader"] { background: rgba(11,16,23,.82); }
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0d141d 0%, #0a0f16 100%);
+        border-right: 1px solid rgba(255,255,255,.07);
+    }
 
+    .hero {
+        padding: 28px 30px 24px;
+        border: 1px solid rgba(90,170,255,.18);
+        border-radius: 22px;
+        background: linear-gradient(135deg, rgba(20,35,53,.95), rgba(12,19,28,.88));
+        box-shadow: 0 18px 55px rgba(0,0,0,.28);
+        margin-bottom: 22px;
+    }
+    .hero-kicker {
+        color: #62c8ff;
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 1.6px;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+    }
+    .hero-title {
+        font-size: clamp(30px, 4vw, 48px);
+        line-height: 1.05;
+        font-weight: 800;
+        margin: 0;
+        color: #f4f8ff;
+    }
+    .hero-subtitle {
+        color: #9eafc3;
+        font-size: 15px;
+        margin-top: 12px;
+        max-width: 760px;
+    }
+    .badge {
+        display: inline-block;
+        padding: 5px 10px;
+        margin: 4px 6px 0 0;
+        border-radius: 999px;
+        background: rgba(73,167,255,.10);
+        border: 1px solid rgba(73,167,255,.22);
+        color: #9ddcff;
+        font-size: 12px;
+        font-weight: 650;
+    }
 
+    .section-title {
+        font-size: 21px;
+        font-weight: 750;
+        color: #f0f5fb;
+        margin: 8px 0 12px;
+    }
+    .muted { color: #8fa1b5; font-size: 13px; }
+
+    .metric-card {
+        padding: 16px 18px;
+        min-height: 96px;
+        border-radius: 16px;
+        background: rgba(18,28,40,.78);
+        border: 1px solid rgba(255,255,255,.07);
+    }
+    .metric-label {
+        color: #8fa1b5;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: .8px;
+    }
+    .metric-value {
+        color: #f5f8fc;
+        font-size: 27px;
+        font-weight: 780;
+        margin-top: 4px;
+    }
+    .metric-accent { color: #61c7ff; }
+
+    .upload-card {
+        padding: 20px;
+        border-radius: 18px;
+        background: rgba(17,27,39,.78);
+        border: 1px solid rgba(255,255,255,.07);
+        margin-bottom: 16px;
+    }
+
+    .result-card {
+        padding: 22px;
+        border-radius: 20px;
+        background: linear-gradient(145deg, rgba(18,30,43,.94), rgba(11,18,27,.94));
+        border: 1px solid rgba(93,177,255,.16);
+        box-shadow: 0 16px 45px rgba(0,0,0,.20);
+        margin: 8px 0 18px;
+    }
+    .result-label {
+        color: #8fa1b5;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    .plate-text {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: clamp(28px, 4vw, 44px);
+        letter-spacing: 3px;
+        font-weight: 850;
+        color: #ffffff;
+        margin: 4px 0 10px;
+    }
+    .confidence-pill {
+        display: inline-block;
+        padding: 6px 11px;
+        border-radius: 999px;
+        background: rgba(0,214,143,.10);
+        border: 1px solid rgba(0,214,143,.22);
+        color: #65e5b4;
+        font-size: 12px;
+        font-weight: 700;
+    }
+
+    div[data-testid="stFileUploader"] {
+        border-radius: 16px;
+    }
+    div.stButton > button[kind="primary"] {
+        border-radius: 12px;
+        height: 48px;
+        font-weight: 750;
+        border: 0;
+        background: linear-gradient(90deg, #1687ff, #25b7ff);
+        box-shadow: 0 8px 25px rgba(22,135,255,.25);
+    }
+    div.stButton > button[kind="primary"]:hover {
+        filter: brightness(1.08);
+        transform: translateY(-1px);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# -----------------------------------------------------------------------------
+# Model helpers
+# -----------------------------------------------------------------------------
 @st.cache_resource
 def load_models(model_path: str):
     detector = YOLO(model_path)
@@ -98,13 +246,10 @@ def indian_plate_normalizations(text):
 def plate_format_score(text):
     """Score whether a candidate has a plausible Indian registration layout."""
     text = clean_text(text)
-    if not (7 <= len(text) <= 12):
-        return 0.0
-    if not text[:2].isalpha():
+    if not (7 <= len(text) <= 12) or not text[:2].isalpha():
         return 0.0
 
     best = 0.0
-    # Common broad layouts: 2 letters + 1-2 digits + 1-3 letters + 1-4 digits.
     for region_len in (1, 2):
         for series_len in (1, 2, 3):
             number_start = 2 + region_len + series_len
@@ -203,8 +348,6 @@ def read_plate(reader, crop):
         format_score = plate_format_score(text)
         normalized_bonus = 0.08 if "normalized" in item["variant"] else 0.0
         short_penalty = 0.35 if len(text) < 6 else 0.0
-        # Valid plate structure now outweighs a small OCR-confidence advantage.
-        # This prevents strings such as PB1OGN4497 from beating PB10GN4497.
         return confidence + (0.45 * format_score) + normalized_bonus - short_penalty
 
     return sorted(unique.values(), key=ranking_score, reverse=True)
@@ -243,6 +386,46 @@ def detect(image, detector, reader):
     return annotated, outputs
 
 
+# -----------------------------------------------------------------------------
+# Header / sidebar
+# -----------------------------------------------------------------------------
+st.markdown(
+    """
+    <div class="hero">
+        <div class="hero-kicker">Computer Vision • OCR • Indian Vehicles</div>
+        <div class="hero-title">🚘 Automatic Number Plate Recognition</div>
+        <div class="hero-subtitle">
+            Detect Indian license plates with a trained YOLO26n model and recover
+            registration text with a multi-variant EasyOCR pipeline.
+        </div>
+        <div>
+            <span class="badge">YOLO26n</span>
+            <span class="badge">EasyOCR</span>
+            <span class="badge">Two-line plates</span>
+            <span class="badge">OCR correction</span>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+with st.sidebar:
+    st.markdown("## 🚘 ANPR Studio")
+    st.caption("Indian License Plate Recognition")
+    st.divider()
+    st.markdown("### Model performance")
+    st.metric("mAP@50", "98.92%")
+    st.metric("mAP@50–95", "80.31%")
+    st.caption("Measured on the held-out test set.")
+    st.divider()
+    st.markdown("### Pipeline")
+    st.markdown("**01**  YOLO26n detection  \n**02**  Plate ROI extraction  \n**03**  Image preprocessing  \n**04**  EasyOCR candidates  \n**05**  Indian-format ranking")
+    st.divider()
+    st.caption("Tip: use a clear, front-facing plate image for the strongest OCR result.")
+
+# -----------------------------------------------------------------------------
+# Model availability
+# -----------------------------------------------------------------------------
 if not MODEL_PATH.exists():
     st.warning("Trained weights are not included in Git. Place `best.pt` at `weights/best.pt` before running inference.")
     st.code("ANPR_Project/weights/best.pt")
@@ -255,37 +438,89 @@ except Exception as exc:
     st.exception(exc)
     st.stop()
 
-uploaded = st.file_uploader("Upload a vehicle image", type=["jpg", "jpeg", "png", "webp"])
+# -----------------------------------------------------------------------------
+# Upload / run area
+# -----------------------------------------------------------------------------
+st.markdown('<div class="section-title">Analyze a vehicle image</div>', unsafe_allow_html=True)
+st.markdown('<div class="muted">Upload JPG, JPEG, PNG or WEBP. The detector finds the plate automatically.</div>', unsafe_allow_html=True)
+
+with st.container(border=True):
+    uploaded = st.file_uploader("Vehicle image", type=["jpg", "jpeg", "png", "webp"], label_visibility="collapsed")
 
 if uploaded:
     image = Image.open(uploaded).convert("RGB")
-    left, right = st.columns(2)
+    st.markdown('<div class="upload-card">', unsafe_allow_html=True)
+    left, right = st.columns([1.25, .75], gap="large")
     with left:
-        st.image(image, caption="Input image", use_container_width=True)
+        st.image(image, caption=f"Input • {uploaded.name}", use_container_width=True)
     with right:
-        st.info("Detection uses the trained YOLO26n model. OCR evaluates the plate ROI, ignores the IND logo where possible, supports two-line layouts, and applies structure-aware OCR correction.")
+        st.markdown("### Ready to analyze")
+        st.markdown("The pipeline will detect the plate, remove the logo area where possible, test multiple preprocessing variants, and rank OCR candidates by Indian plate structure.")
+        st.markdown('<span class="confidence-pill">● Model ready</span>', unsafe_allow_html=True)
+        st.write("")
+        run = st.button("🚀  Run ANPR", type="primary", use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    if st.button("🚀 Run ANPR", type="primary", use_container_width=True):
-        with st.spinner("Detecting plates and running OCR..."):
+    if run:
+        with st.spinner("Detecting plate and running OCR variants..."):
             annotated, outputs = detect(image, detector, reader)
-        st.subheader("Detection result")
+
+        st.markdown('<div class="section-title">Detection result</div>', unsafe_allow_html=True)
         st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), use_container_width=True)
+
         if not outputs:
-            st.warning("No license plate detected.")
+            st.error("No license plate detected. Try a clearer or closer vehicle image.")
         else:
             st.success(f"Detected {len(outputs)} license plate(s).")
             for i, item in enumerate(outputs, 1):
-                st.markdown(f"### Plate {i}")
                 best = item["best_ocr"]
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("Detector confidence", f"{item['detector_confidence']:.3f}")
-                with col2:
-                    st.metric("OCR confidence", f"{best['confidence']:.3f}" if best else "—")
+                st.markdown(f'<div class="section-title">Plate {i}</div>', unsafe_allow_html=True)
+
                 if best:
-                    st.markdown(f"**Recognized text:** `{best['text']}`  \n\n**Best preprocessing:** `{best['variant']}`")
+                    st.markdown(
+                        f'''<div class="result-card">
+                            <div class="result-label">Recognized registration</div>
+                            <div class="plate-text">{best["text"]}</div>
+                            <span class="confidence-pill">OCR {best["confidence"]:.1%}</span>
+                        </div>''',
+                        unsafe_allow_html=True,
+                    )
                 else:
                     st.info("OCR could not read this plate.")
-                if item["ocr_candidates"]:
-                    st.caption("Top OCR candidates")
-                    st.dataframe(item["ocr_candidates"], use_container_width=True, hide_index=True)
+
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.metric("Detector confidence", f"{item['detector_confidence']:.3f}")
+                with c2:
+                    st.metric("OCR confidence", f"{best['confidence']:.3f}" if best else "—")
+                with c3:
+                    st.metric("Candidates", len(item["ocr_candidates"]))
+
+                if best:
+                    st.caption(f"Best preprocessing: `{best['variant']}`")
+
+                with st.expander("🔎 View OCR candidates", expanded=False):
+                    if item["ocr_candidates"]:
+                        st.dataframe(item["ocr_candidates"], use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No OCR candidates were generated.")
+
+                encoded = cv2.imencode(".jpg", annotated)[1].tobytes()
+                st.download_button(
+                    "⬇️ Download annotated result",
+                    data=encoded,
+                    file_name="anpr_result.jpg",
+                    mime="image/jpeg",
+                    key=f"download_{i}",
+                )
+else:
+    st.markdown(
+        """
+        <div style="text-align:center; padding:70px 20px 90px; color:#8fa1b5;">
+            <div style="font-size:54px; margin-bottom:12px;">📷</div>
+            <div style="font-size:20px; font-weight:700; color:#dce8f5;">Upload a vehicle image to begin</div>
+            <div style="font-size:14px; margin-top:7px;">Best results come from a clear, well-lit license plate.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
