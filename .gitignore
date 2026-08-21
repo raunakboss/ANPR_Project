@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Model weights / large artifacts
+weights/*.pt
+*.onnx
+*.engine
+runs/
+
+# Datasets
+anpr_dataset/
+lpr_dataset/
+data/
+
+# Colab / notebooks runtime
+.ipynb_checkpoints/
+content/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
