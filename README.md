@@ -4,6 +4,18 @@ A computer-vision application for detecting Indian vehicle license plates and re
 
 The project combines a custom-trained **YOLO26n** detector with a multi-variant **EasyOCR** pipeline, including dedicated handling for two-line plates and Indian registration-number structure.
 
+## 🖥️ Live Demo Preview
+
+### ANPR Studio Dashboard
+
+![ANPR Studio Dashboard](screenshots/dashboard.png)
+
+### Successful Plate Recognition
+
+![ANPR Detection Result](screenshots/anpr-result.png)
+
+The demo above shows the complete pipeline recognizing **PB10GN4497**, including the annotated plate detection, detector confidence, OCR confidence, candidate count, and preprocessing method.
+
 ## ✨ Features
 
 - License-plate detection with YOLO26n
@@ -137,8 +149,11 @@ ANPR_Project/
 ├── requirements.txt
 ├── results.md
 ├── README.md
+├── screenshots/
+│   ├── dashboard.png
+│   └── anpr-result.png
 └── weights/
-    └── best.pt                 # local model weights
+    └── best.pt                 # local model weights, ignored by Git
 ```
 
 ## 🚀 Run Locally
@@ -169,7 +184,7 @@ streamlit run streamlit_app.py
 
 ## ⚠️ Model Weights
 
-Large model files are intentionally kept out of the repository when appropriate. Place the trained `best.pt` checkpoint at `weights/best.pt` locally before running the application.
+The trained `best.pt` checkpoint is kept outside Git to keep the repository lightweight. Place it at `weights/best.pt` locally before running the application.
 
 ## 📌 Project Status
 
